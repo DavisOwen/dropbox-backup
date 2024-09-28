@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOGFILE="$SCRIPT_DIR/dropbox_backup.log"
 
 # Redirect stdout and stderr to the log file
-exec > >(tee -a "$LOGFILE") 2>&1
+exec > "$LOGFILE" 2>&1
 
 # Load environment variables from the .env file
 if [ -f .dropbox_backup.env ]; then
