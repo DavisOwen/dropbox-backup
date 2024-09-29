@@ -1,6 +1,8 @@
 #!/bin/bash
 
-# # Get the directory where the script is located
+SECONDS=0
+
+# Get the directory where the script is located
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOGFILE="$SCRIPT_DIR/dropbox_backup.log"
 
@@ -105,6 +107,8 @@ list_files() {
     fi
 }
 
+RETRY_COUNT=0
+
 # Function to download all files collected in the array
 download_file() {
     DROPBOX_PATH=$1
@@ -120,8 +124,23 @@ download_file() {
     # Check if the download was successful based on HTTP status code
     if [ "$http_response" -eq 200 ]; then
         echo "Downloaded $DROPBOX_PATH successfully." >> "$LOGFILE"
-        mv "$LOCAL_PATH" "$DESTINATION/"
+        # Create the full path for the destination, preserving the directory structure
+        DESTINATION_PATH="$DESTINATION$(dirname "$DROPBOX_PATH")"
+
+        # Create the destination directory if it doesn't exist
+        mkdir -p "$DESTINATION_PATH"
+
+        mv "$LOCAL_PATH" "$DESTINATION_PATH/"
         echo "Moved $LOCAL_PATH to $DESTINATION/" >> "$LOGFILE"
+    elif [ "$http_response" -eq 401 ]; then
+        if [ "$RETRY_COUNT" -gt 3 ]; then
+          echo "Retry count exceeded, aborting..."
+          exit 1
+        fi
+        refresh_access_token
+        echo "Refreshing access token, retrying..."
+        ((RETRY_COUNT++))
+        download_file "$DROPBOX_PATH"
     else
         echo "Error downloading $DROPBOX_PATH. HTTP Response Code: $http_response" >> "$LOGFILE"
     fi
@@ -139,6 +158,9 @@ echo "Total files to download: $total_files"
 for ((i = 0; i < total_files; i++)); do
     file=${FILES_TO_DOWNLOAD[$i]}
     download_file "$file"
+
+    # Reset RETRY_COUNT after successful download
+    RETRY_COUNT=0
     
     # Calculate and log progress
     progress=$(( (i + 1) * 100 / total_files ))
@@ -146,3 +168,4 @@ for ((i = 0; i < total_files; i++)); do
 done
 
 echo "Total files downloaded: $total_files" >> "$LOGFILE"
+echo "Elapsed time: $SECONDS seconds" >> "$LOGFILE"
