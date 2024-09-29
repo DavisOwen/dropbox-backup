@@ -1,4 +1,16 @@
-# Obtaining a Dropbox Refresh Token
+# Dropbox Backup
+
+A simple bash script that downloads all your Dropbox files to a directory of your choice. Typically used to backup your files to an external HDD.
+
+## Usage
+
+`cp .dropbox_backup.env.example .dropbox_backup.env`
+
+Obtain Credentials using the instructions below from DropboxAPI, and supply them in the corresponding fields in `.dropbox_backup.env`
+
+Then, just run `./dropbox_backup.sh`. Output can be viewed in the `dropbox_backup.log` file. Progress can be quite slow so it is recommended to automate this via crontab or task scheduler to run in the background intermittently. 
+
+##  Obtaining a Dropbox Refresh Token
 
 To automate your Dropbox API interactions and avoid manual authentication each time, follow these steps to obtain a refresh token:
 
