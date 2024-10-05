@@ -10,10 +10,10 @@ Obtain Credentials using the instructions below from DropboxAPI, and supply them
 
 Then run
 
--`python3 -m venv env`
--`source env/bin/activate`
--`pip install -r requirements.txt`
--`python ./dropbox-backup.py &`
+- `python3 -m venv env`
+- `source env/bin/activate`
+- `pip install -r requirements.txt`
+- `python ./dropbox-backup.py &`
 
 Output can be viewed in the `dropbox_backup.log` file. The runtime for this can be quite long, so it is recommended to run in the background (with `&`), or to automate this via crontab or task scheduler to run in the background intermittently.
 
