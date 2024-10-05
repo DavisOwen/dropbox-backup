@@ -2,13 +2,19 @@
 
 A simple python script that downloads all your Dropbox files to a directory of your choice. Typically used to backup your files to an external HDD.
 
-## Usage
+## Credentials
 
-`cp .dropbox-backup.env.example .dropbox-backup.env`
+Create `.dropbox-backup.env` from the `dropbox-backup.env.example` example file
+
+```bash
+cp .dropbox-backup.env.example .dropbox-backup.env
+```
 
 Obtain Credentials using the instructions in [Obtaining a Dropbox Refresh Token](#obtaining-a-dropbox-refresh-token), and supply them in the corresponding fields in `.dropbox-backup.env`
 
-Then run
+Destination directory can be specified to choose which directory you want your backup to be stored in.
+
+## Usage
 
 ```bash
 python3 -m venv env
