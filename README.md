@@ -6,14 +6,16 @@ A simple python script that downloads all your Dropbox files to a directory of y
 
 `cp .dropbox-backup.env.example .dropbox-backup.env`
 
-Obtain Credentials using the instructions below from DropboxAPI, and supply them in the corresponding fields in `.dropbox-backup.env`
+Obtain Credentials using the instructions in [Obtaining a Dropbox Refresh Token](#obtaining-a-dropbox-refresh-token), and supply them in the corresponding fields in `.dropbox-backup.env`
 
 Then run
 
-- `python3 -m venv env`
-- `source env/bin/activate`
-- `pip install -r requirements.txt`
-- `python ./dropbox-backup.py &`
+```bash
+python3 -m venv env
+source env/bin/activate
+pip install -r requirements.txt
+python ./dropbox-backup.py &
+```
 
 Output can be viewed in the `dropbox_backup.log` file. The runtime for this can be quite long, so it is recommended to run in the background (with `&`), or to automate this via crontab or task scheduler to run in the background intermittently.
 
