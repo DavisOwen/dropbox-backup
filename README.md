@@ -1,14 +1,21 @@
 # Dropbox Backup
 
-A simple bash script that downloads all your Dropbox files to a directory of your choice. Typically used to backup your files to an external HDD.
+A simple python script that downloads all your Dropbox files to a directory of your choice. Typically used to backup your files to an external HDD.
 
 ## Usage
 
-`cp .dropbox_backup.env.example .dropbox_backup.env`
+`cp .dropbox-backup.env.example .dropbox-backup.env`
 
-Obtain Credentials using the instructions below from DropboxAPI, and supply them in the corresponding fields in `.dropbox_backup.env`
+Obtain Credentials using the instructions below from DropboxAPI, and supply them in the corresponding fields in `.dropbox-backup.env`
 
-Then, just run `./dropbox_backup.sh`. Output can be viewed in the `dropbox_backup.log` file. Progress can be quite slow so it is recommended to automate this via crontab or task scheduler to run in the background intermittently. 
+Then run
+
+`python3 -m venv env`
+`source env/bin/activate`
+`pip install -r requirements.txt`
+`python ./dropbox-backup.py &`
+
+Output can be viewed in the `dropbox_backup.log` file. The runtime for this can be quite long, so it is recommended to run in the background (with `&`), or to automate this via crontab or task scheduler to run in the background intermittently.
 
 ##  Obtaining a Dropbox Refresh Token
 
