@@ -15,10 +15,7 @@ Destination directory can be specified to choose which directory you want your b
 ## Usage
 
 ```bash
-python3 -m venv env
-source env/bin/activate
-pip install -r requirements.txt
-python ./dropbox-backup.py &
+./run.sh
 ```
 
 Output can be viewed in the `dropbox_backup.log` file. The runtime for this can be quite long, so it is recommended to run in the background (with `&`), or to automate this via crontab or task scheduler to run in the background intermittently.
