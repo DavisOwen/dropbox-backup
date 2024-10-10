@@ -49,13 +49,13 @@ def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
     """
     def decorator_retry(func):
         @functools.wraps(func)
-        def wrapper_retry(*args, **kwargs):
+        async def wrapper_retry(*args, **kwargs):
             retries = 0
             current_delay = delay
 
             while retries < max_retries:
                 try:
-                    return func(*args, **kwargs)  # Attempt to execute the function
+                    return await func(*args, **kwargs)  # Attempt to execute the function
                 except AuthError as e:
                     logging.warning(f"Auth error encountered: {e}. Refreshing token...")
                     refresh_access_token()  # Refresh token if it's an auth error
@@ -68,7 +68,7 @@ def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
                     raise  # Re-raise the exception after final failure
                 else:
                     logging.info(f"Retrying {func.__name__} ({retries}/{max_retries}) after {current_delay} seconds...")
-                    time.sleep(current_delay)
+                    await asyncio.sleep(current_delay)
                     current_delay *= backoff  # Exponentially increase delay for the next retry
         return wrapper_retry
     return decorator_retry
