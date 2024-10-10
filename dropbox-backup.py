@@ -1,10 +1,11 @@
 import os
 import time
 import logging
-import dropbox
+import aiohttp
+import aiofiles
+import asyncio
 import requests
 import functools
-from dropbox.exceptions import AuthError
 from dotenv import load_dotenv
 
 # Start timer
@@ -29,6 +30,9 @@ CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 DESTINATION = os.getenv("DESTINATION", './backup')
 TOKEN_URL = "https://api.dropboxapi.com/oauth2/token"
 
+class AuthError(Exception):
+    pass
+
 def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
     """
     Retry decorator with exponential backoff and token refresh on AuthError.
@@ -49,8 +53,6 @@ def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
                 except AuthError as e:
                     logging.warning(f"Auth error encountered: {e}. Refreshing token...")
                     refresh_access_token()  # Refresh token if it's an auth error
-                except Exception as e:
-                    logging.warning(f"Error encountered: {e}")
 
                 retries += 1
                 if retries >= max_retries:
@@ -65,7 +67,7 @@ def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
 
 # Function to refresh the access token
 def refresh_access_token():
-    global ACCESS_TOKEN, REFRESH_TOKEN
+    global ACCESS_TOKEN, REFRESH_TOKEN, dbx
     logging.info("Refreshing access token...")
     
     try:
@@ -96,71 +98,150 @@ def refresh_access_token():
         logging.error(f"Error refreshing token: {e}")
         exit(1)
 
-# Create Dropbox client using the access token
-def create_dbx_client():
+# Function to list files recursively in Dropbox asynchronously
+@retry_with_token_refresh(max_retries=3, delay=2, backoff=2)
+async def fetch_folder_files(session, folder_path):
     try:
-        dbx = dropbox.Dropbox(ACCESS_TOKEN)
-        dbx.users_get_current_account()  # To check if the token is valid
-        return dbx
-    except AuthError as e:
-        logging.error("Failed to authenticate Dropbox client: {}".format(e))
-        refresh_access_token()
-        dbx = dropbox.Dropbox(ACCESS_TOKEN)
-        return dbx
+        # Making a request to list folder contents
+        response = await session.post(
+            "https://api.dropboxapi.com/2/files/list_folder",
+            headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
+            json={"path": folder_path, "recursive": True}
+        )
+        if response.status == 200:
+            return await response.json()
+        elif response.status == 401:
+            logging.error("Authentication failed: Invalid or expired access token.")
+            raise AuthError
+        elif response.status == 403:
+            logging.error("Access denied: You do not have permission to access this folder.")
+            raise
+        else:
+            logging.error(f"Error fetching files from {folder_path}: {response.status} - {await response.text()}")
+            raise
+    except Exception as e:
+        logging.error(f"Error fetching files from {folder_path}: {str(e)}")
+        raise e # Raise exception so the decorator will handle retries
 
-# Initialize Dropbox client
-dbx = create_dbx_client()
+@retry_with_token_refresh(max_retries=3, delay=2, backoff=2)
+async def fetch_continue_folder_files(session, cursor):
+    try:
+        # Making a request to continue listing folder contents
+        response = await session.post(
+            "https://api.dropboxapi.com/2/files/list_folder/continue",
+            headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
+            json={"cursor": cursor}
+        )
+        if response.status == 200:
+            return await response.json()
+        elif response.status == 401:
+            logging.error("Authentication failed: Invalid or expired access token.")
+            raise AuthError
+        elif response.status == 403:
+            logging.error("Access denied: You do not have permission to access this folder.")
+            raise
+        else:
+            logging.error(f"Error fetching files {response.status} - {await response.text()}")
+            raise
+    except Exception as e:
+        logging.error(f"Error fetching files: {e}")
+        raise e # Raise exception so the decorator will handle retries
 
 # Function to list files recursively in Dropbox
-@retry_with_token_refresh(max_retries=3, delay=2, backoff=2)
-def list_files(folder_path=""):
+async def list_files(session, folder_path=""):
     files_to_download = []
     try:
-        result = dbx.files_list_folder(folder_path, recursive=True)
-        while True:
-            for entry in result.entries:
-                if isinstance(entry, dropbox.files.FileMetadata):
-                    files_to_download.append(entry.path_display)
-                    logging.info(f"Found file: {entry.path_display}")
-            if not result.has_more:
+        result = await fetch_folder_files(session, folder_path)
+        tasks = []
+        while result:
+            for entry in result.get('entries', []):
+                if entry.get('.tag') == 'file':
+                    files_to_download.append(entry['path_display'])
+                    logging.info(f"Found file: {entry['path_display']}")
+                elif entry.get('.tag') == 'folder':
+                    # Start a new task for each subfolder
+                    tasks.append(list_files(session, entry['path_display']))
+
+            if not result.get('has_more'):
                 break
-            result = dbx.files_list_folder_continue(result.cursor)
-    except AuthError:
-        logging.error("Access token expired. Refreshing...")
-        raise # Raise exception so the decorator will handle retries
+            result = await fetch_continue_folder_files(session, result.get('cursor'))
+
+         # Wait for all folder tasks to complete
+        if tasks:
+            nested_files = await asyncio.gather(*tasks)
+            for file_list in nested_files:
+                files_to_download.extend(file_list)
+
+    except Exception as e:
+        logging.error(f"Listing files failed. Error: {e}")
+        raise
+
     return files_to_download
 
 # Function to download a file from Dropbox
 @retry_with_token_refresh(max_retries=3, delay=2, backoff=2)
-def download_file(dropbox_path, local_path):
+async def download_file(session, dropbox_path, local_path, progress, total_files):
+    url = "https://content.dropboxapi.com/2/files/download"
+    
+    headers = {
+        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Dropbox-API-Arg": f'{{"path": "{dropbox_path}"}}',
+    }
+
     try:
-        with open(local_path, 'wb') as f:
-            metadata, response = dbx.files_download(dropbox_path)
-            f.write(response.content)
+        async with session.post(url, headers=headers) as response:
+            if response == 401:
+                logging.error("Authentication failed: Invalid or expired access token.")
+                raise AuthError
+            elif response.status != 200:
+                logging.error(f"Error downloading {dropbox_path}: {response.status} - {await response.text()}")
+                raise
+
+            content = await response.read()
+
+            async with aiofiles.open(local_path, 'wb') as f:
+                await f.write(content)
         logging.info(f"Downloaded {dropbox_path} successfully.")
-    except AuthError:
-        logging.error(f"Error downloading {dropbox_path}. Refreshing token...")
-        raise # Raise exception so the decorator will handle retries
 
-# Create destination folder if not exists
-os.makedirs(DESTINATION, exist_ok=True)
+        # Log progress
+        progress_str = (progress + 1) * 100 // total_files
+        logging.info(f"Progress: {progress_str}% ({progress + 1}/{total_files} files downloaded)")
+    except Exception as e:
+        logging.error(f"Error downloading {dropbox_path}. Error: {e}. Refreshing token...")
+        raise e # Raise exception so the decorator will handle retries
 
-# List all files in the root directory
-logging.info("Starting file listing...")
-files_to_download = list_files()
+async def main():
+    # Initialize Dropbox client by refreshing token
+    refresh_access_token()
 
-# Download files
-total_files = len(files_to_download)
-logging.info(f"Total files to download: {total_files}")
-for i, file_path in enumerate(files_to_download):
-    local_file_path = os.path.join(DESTINATION, os.path.basename(file_path))
-    download_file(file_path, local_file_path)
+    # Create destination folder if not exists
+    os.makedirs(DESTINATION, exist_ok=True)
 
-    # Log progress
-    progress = (i + 1) * 100 // total_files
-    logging.info(f"Progress: {progress}% ({i + 1}/{total_files} files downloaded)")
+    async with aiohttp.ClientSession() as session:
+        # List all files in the root directory
+        logging.info("Starting file listing...")
+        files_to_download = await list_files(session)
 
-# Log total time taken
-elapsed_time = time.time() - start_time
-logging.info(f"Total files downloaded: {total_files}")
-logging.info(f"Elapsed time: {elapsed_time} seconds")
+        # Download files
+        total_files = len(files_to_download)
+        logging.info(f"Total files to download: {total_files}")
+
+        tasks = [
+            download_file(
+                session,
+                file_path,
+                os.path.join(DESTINATION, os.path.basename(file_path)),
+                progress,
+                total_files
+            )
+            for progress, file_path in files_to_download
+        ]
+        asyncio.gather(*tasks)
+
+    # Log total time taken
+    elapsed_time = time.time() - start_time
+    logging.info(f"Total files downloaded: {total_files}")
+    logging.info(f"Elapsed time: {elapsed_time} seconds")
+
+if __name__ == "__main__":
+    asyncio.run(main())
