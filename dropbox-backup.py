@@ -123,9 +123,9 @@ def refresh_access_token():
         # Update refresh token if a new one is provided
         if new_refresh_token:
             REFRESH_TOKEN = new_refresh_token
-            logging.info(f"New refresh token: {REFRESH_TOKEN}")
+            logging.debug(f"New refresh token: {REFRESH_TOKEN}")
 
-        logging.info(f"New access token: {ACCESS_TOKEN}")
+        logging.debug(f"New access token: {ACCESS_TOKEN}")
 
     except Exception as e:
         logging.exception(f"Error refreshing token: {e}")
@@ -256,7 +256,7 @@ async def download_file(session, dropbox_path, local_path):
 
         async with aiofiles.open(local_path, 'wb') as f:
             await f.write(content)
-        logging.info(f"Downloaded {dropbox_path} successfully.")
+        logging.debug(f"Downloaded {dropbox_path} successfully.")
     except Exception as e:
         logging.exception(f"Error downloading {dropbox_path}. Error: {str(e)}")
         raise # Raise exception so the decorator will handle retries
