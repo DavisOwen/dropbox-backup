@@ -17,10 +17,16 @@ if not os.path.exists('.dropbox-backup.env'):
     exit(1)
 load_dotenv('.dropbox-backup.env')
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_LEVEL_DICT = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+}
+
 # Setup logging
 script_dir = os.path.dirname(os.path.abspath(__file__))
 logfile = os.path.join(script_dir, 'dropbox-backup.log')
-logging.basicConfig(filename=logfile, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', filemode='w')
+logging.basicConfig(filename=logfile, level=LOG_LEVEL_DICT.get(LOG_LEVEL, logging.INFO), format='%(asctime)s - %(levelname)s - %(message)s', filemode='w')
 
 # Get Dropbox API credentials from environment variables
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
@@ -37,9 +43,20 @@ class PermissionError(Exception):
     pass
 
 class RateLimitError(Exception):
-    pass
+    def __init__(self, message="Rate limit exceeded.", retry_after=None):
+        self.retry_after = retry_after
+        super().__init__(message)
 
-rate_limit_event = asyncio.Event()
+class RateLimiter:
+    def __init__(self, max_concurrent_requests: int, delay: int):
+        self.semaphore = asyncio.Semaphore(max_concurrent_requests)  # Limit concurrent requests
+        self.delay = delay  # Delay between requests
+
+    async def wait(self):
+        async with self.semaphore:  # Acquire a semaphore before making the request
+            await asyncio.sleep(self.delay)  # Delay before proceeding to the request
+
+rate_limiter = RateLimiter(max_concurrent_requests=10, delay=1)
 
 def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
     """
@@ -63,7 +80,11 @@ def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
                     refresh_access_token()  # Refresh token if it's an auth error
                 except RateLimitError as e:
                     logging.warning(f"Rate Limit error encountered: {e}. Retrying with backoff")
-                    rate_limit_event.clear()
+                    if e.retry_after:
+                        current_delay = e.retry_after
+                except Exception as e:
+                    logging.exception(e)
+                    logging.error("Retrying with backoff")
 
                 retries += 1
                 if retries >= max_retries:
@@ -73,7 +94,6 @@ def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
                     logging.info(f"Retrying {func.__name__} ({retries}/{max_retries}) after {current_delay} seconds...")
                     await asyncio.sleep(current_delay)
 
-                    rate_limit_event.set()
                     current_delay *= backoff  # Exponentially increase delay for the next retry
         return wrapper_retry
     return decorator_retry
@@ -108,7 +128,7 @@ def refresh_access_token():
         logging.info(f"New access token: {ACCESS_TOKEN}")
 
     except Exception as e:
-        logging.error(f"Error refreshing token: {e}")
+        logging.exception(f"Error refreshing token: {e}")
         exit(1)
 
 async def response_handler(response):
@@ -122,13 +142,13 @@ async def response_handler(response):
             raise PermissionError("Access denied to the folder.")
         elif response.status == 429:
             logging.error("Rate limit: Too many requests.")
-            raise RateLimitError("Rate limit exceeded.")
+            response = await response.json()
+            retry_after = response.get('error', {}).get('retry_after', None)
+            raise RateLimitError("Rate limit exceeded.", retry_after)
         else:
             raise Exception("API Error")
 
 async def api_request_handler(session, url, headers = None, json = None):
-    await rate_limit_event.wait()
-
     default_headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
     if headers:
         default_headers.update(headers)
@@ -140,16 +160,19 @@ async def api_request_handler(session, url, headers = None, json = None):
     if json:
         params['json'] = json
 
+    await rate_limiter.wait()
+
     response = await session.post(
         url,
         **params
     )
+
     await response_handler(response)
 
     return response
 
-# Function to list files recursively in Dropbox asynchronously
 @retry_with_token_refresh(max_retries=3, delay=2, backoff=2)
+# Function to list files recursively in Dropbox asynchronously
 async def fetch_folder_files(session, folder_path):
     try:
         # Making a request to list folder contents
@@ -160,7 +183,7 @@ async def fetch_folder_files(session, folder_path):
         )
         return await response.json()
     except Exception as e:
-        logging.error(f"Error fetching files from {folder_path}: {str(e)}")
+        logging.exception(f"Error fetching files from {folder_path}: {str(e)}")
         raise # Raise exception so the decorator will handle retries
 
 @retry_with_token_refresh(max_retries=3, delay=2, backoff=2)
@@ -174,43 +197,47 @@ async def fetch_continue_folder_files(session, cursor):
         )
         return await response.json()
     except Exception as e:
-        logging.error(f"Error continuing to fetch files: {str(e)}")
+        logging.exception(f"Error continuing to fetch files: {str(e)}")
         raise # Raise exception so the decorator will handle retries
 
-# Function to list files recursively in Dropbox
-async def list_files(session, folder_path=""):
-    files_to_download = []
+# Function to list and download files recursively in Dropbox
+async def list_and_download_files(session, folder_path="", cursor=None):
+    folder_path_str = folder_path if folder_path else "/"
+    logging.debug(f"Listing files for {folder_path_str}")
     try:
-        result = await fetch_folder_files(session, folder_path)
+        if cursor:
+            result = await fetch_continue_folder_files(session, cursor)
+        else:
+            result = await fetch_folder_files(session, folder_path)
+        total_files = 0
+        entries = result.get('entries', [])
+        total_files += len(entries)
+        logging.info(f"{total_files} more files found, downloading...")
         tasks = []
-        while result:
-            for entry in result.get('entries', []):
-                if entry.get('.tag') == 'file':
-                    files_to_download.append(entry['path_display'])
-                    logging.info(f"Found file: {entry['path_display']}")
-                elif entry.get('.tag') == 'folder':
-                    # Start a new task for each subfolder
-                    tasks.append(list_files(session, entry['path_display']))
+        for entry in entries:
+            if entry.get('.tag') == 'file':
+                file_path = entry['path_display']
+                logging.debug(f"Found file: {file_path}")
+                destination_path = os.path.join(DESTINATION, file_path.lstrip('/'))
+                os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+                tasks.append(download_file(
+                    session,
+                    file_path,
+                    destination_path,
+                ))
 
-            if not result.get('has_more'):
-                break
-            result = await fetch_continue_folder_files(session, result.get('cursor'))
+        if result.get('has_more'):
+            tasks.append(list_and_download_files(session, cursor=result.get('cursor')))
 
-         # Wait for all folder tasks to complete
-        if tasks:
-            nested_files = await asyncio.gather(*tasks)
-            for file_list in nested_files:
-                files_to_download.extend(file_list)
+        await asyncio.gather(*tasks)
 
     except Exception as e:
-        logging.error(f"Listing files for {folder_path} failed. Error: {str(e)}")
+        logging.exception(f"Listing files for {folder_path_str} failed. Error: {str(e)}")
         raise
-
-    return files_to_download
 
 # Function to download a file from Dropbox
 @retry_with_token_refresh(max_retries=3, delay=2, backoff=2)
-async def download_file(session, dropbox_path, local_path, progress, total_files):
+async def download_file(session, dropbox_path, local_path):
     url = "https://content.dropboxapi.com/2/files/download"
     
     headers = {
@@ -224,19 +251,14 @@ async def download_file(session, dropbox_path, local_path, progress, total_files
             url=url,
             headers=headers,
         )
-        await response_handler(response)
 
         content = await response.read()
 
         async with aiofiles.open(local_path, 'wb') as f:
             await f.write(content)
         logging.info(f"Downloaded {dropbox_path} successfully.")
-
-        # Log progress
-        progress_str = (progress + 1) * 100 // total_files
-        logging.info(f"Progress: {progress_str}% ({progress + 1}/{total_files} files downloaded)")
     except Exception as e:
-        logging.error(f"Error downloading {dropbox_path}. Error: {str(e)}")
+        logging.exception(f"Error downloading {dropbox_path}. Error: {str(e)}")
         raise # Raise exception so the decorator will handle retries
 
 async def main():
@@ -246,32 +268,16 @@ async def main():
     # Create destination folder if not exists
     os.makedirs(DESTINATION, exist_ok=True)
 
-    async with aiohttp.ClientSession() as session:
-        # Allow all requests initially
-        rate_limit_event.set()
+    timeout = aiohttp.ClientTimeout(total=1000, connect=1000, sock_read=1000, sock_connect=1000)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         # List all files in the root directory
-        logging.info("Starting file listing...")
-        files_to_download = await list_files(session)
+        logging.info("Starting backup...")
 
-        # Download files
-        total_files = len(files_to_download)
-        logging.info(f"Total files to download: {total_files}")
+        await list_and_download_files(session)
 
-        tasks = [
-            download_file(
-                session,
-                file_path,
-                os.path.join(DESTINATION, os.path.basename(file_path)),
-                progress,
-                total_files
-            )
-            for progress, file_path in files_to_download
-        ]
-        asyncio.gather(*tasks)
 
     # Log total time taken
     elapsed_time = time.time() - start_time
-    logging.info(f"Total files downloaded: {total_files}")
     logging.info(f"Elapsed time: {elapsed_time} seconds")
 
 if __name__ == "__main__":
