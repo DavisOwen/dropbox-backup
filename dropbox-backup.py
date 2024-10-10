@@ -33,6 +33,12 @@ TOKEN_URL = "https://api.dropboxapi.com/oauth2/token"
 class AuthError(Exception):
     pass
 
+class PermissionError(Exception):
+    pass
+
+class RateLimitError(Exception):
+    pass
+
 def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
     """
     Retry decorator with exponential backoff and token refresh on AuthError.
@@ -53,6 +59,8 @@ def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
                 except AuthError as e:
                     logging.warning(f"Auth error encountered: {e}. Refreshing token...")
                     refresh_access_token()  # Refresh token if it's an auth error
+                except RateLimitError as e:
+                    logging.warning(f"Rate Limit error encountered: {e}. Retrying with backoff")
 
                 retries += 1
                 if retries >= max_retries:
@@ -98,6 +106,21 @@ def refresh_access_token():
         logging.error(f"Error refreshing token: {e}")
         exit(1)
 
+async def response_handler(response):
+    if response.status >= 400:
+        logging.error(f"{response.status} - {await response.text()}")
+        if response.status == 401:
+            logging.error("Authentication failed: Invalid or expired access token.")
+            raise AuthError("Invalid or expired access token.")
+        elif response.status == 403:
+            logging.error("Access denied: You do not have permission to access this folder.")
+            raise PermissionError("Access denied to the folder.")
+        elif response.status == 429:
+            logging.error("Rate limit: Too many requests.")
+            raise RateLimitError("Rate limit exceeded.")
+        else:
+            raise Exception("API Error")
+
 # Function to list files recursively in Dropbox asynchronously
 @retry_with_token_refresh(max_retries=3, delay=2, backoff=2)
 async def fetch_folder_files(session, folder_path):
@@ -108,20 +131,11 @@ async def fetch_folder_files(session, folder_path):
             headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
             json={"path": folder_path, "recursive": True}
         )
-        if response.status == 200:
-            return await response.json()
-        elif response.status == 401:
-            logging.error("Authentication failed: Invalid or expired access token.")
-            raise AuthError
-        elif response.status == 403:
-            logging.error("Access denied: You do not have permission to access this folder.")
-            raise
-        else:
-            logging.error(f"Error fetching files from {folder_path}: {response.status} - {await response.text()}")
-            raise
+        await response_handler(response)
+        return await response.json()
     except Exception as e:
         logging.error(f"Error fetching files from {folder_path}: {str(e)}")
-        raise e # Raise exception so the decorator will handle retries
+        raise # Raise exception so the decorator will handle retries
 
 @retry_with_token_refresh(max_retries=3, delay=2, backoff=2)
 async def fetch_continue_folder_files(session, cursor):
@@ -132,20 +146,11 @@ async def fetch_continue_folder_files(session, cursor):
             headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
             json={"cursor": cursor}
         )
-        if response.status == 200:
-            return await response.json()
-        elif response.status == 401:
-            logging.error("Authentication failed: Invalid or expired access token.")
-            raise AuthError
-        elif response.status == 403:
-            logging.error("Access denied: You do not have permission to access this folder.")
-            raise
-        else:
-            logging.error(f"Error fetching files {response.status} - {await response.text()}")
-            raise
+        await response_handler(response)
+        return await response.json()
     except Exception as e:
-        logging.error(f"Error fetching files: {e}")
-        raise e # Raise exception so the decorator will handle retries
+        logging.error(f"Error continuing to fetch files: {str(e)}")
+        raise # Raise exception so the decorator will handle retries
 
 # Function to list files recursively in Dropbox
 async def list_files(session, folder_path=""):
@@ -173,7 +178,7 @@ async def list_files(session, folder_path=""):
                 files_to_download.extend(file_list)
 
     except Exception as e:
-        logging.error(f"Listing files failed. Error: {e}")
+        logging.error(f"Listing files for {folder_path} failed. Error: {str(e)}")
         raise
 
     return files_to_download
@@ -190,12 +195,7 @@ async def download_file(session, dropbox_path, local_path, progress, total_files
 
     try:
         async with session.post(url, headers=headers) as response:
-            if response == 401:
-                logging.error("Authentication failed: Invalid or expired access token.")
-                raise AuthError
-            elif response.status != 200:
-                logging.error(f"Error downloading {dropbox_path}: {response.status} - {await response.text()}")
-                raise
+            await response_handler(response)
 
             content = await response.read()
 
@@ -207,8 +207,8 @@ async def download_file(session, dropbox_path, local_path, progress, total_files
         progress_str = (progress + 1) * 100 // total_files
         logging.info(f"Progress: {progress_str}% ({progress + 1}/{total_files} files downloaded)")
     except Exception as e:
-        logging.error(f"Error downloading {dropbox_path}. Error: {e}. Refreshing token...")
-        raise e # Raise exception so the decorator will handle retries
+        logging.error(f"Error downloading {dropbox_path}. Error: {str(e)}")
+        raise # Raise exception so the decorator will handle retries
 
 async def main():
     # Initialize Dropbox client by refreshing token
