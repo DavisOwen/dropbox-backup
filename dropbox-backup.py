@@ -39,6 +39,8 @@ class PermissionError(Exception):
 class RateLimitError(Exception):
     pass
 
+rate_limit_event = asyncio.Event()
+
 def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
     """
     Retry decorator with exponential backoff and token refresh on AuthError.
@@ -61,6 +63,7 @@ def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
                     refresh_access_token()  # Refresh token if it's an auth error
                 except RateLimitError as e:
                     logging.warning(f"Rate Limit error encountered: {e}. Retrying with backoff")
+                    rate_limit_event.clear()
 
                 retries += 1
                 if retries >= max_retries:
@@ -69,6 +72,8 @@ def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
                 else:
                     logging.info(f"Retrying {func.__name__} ({retries}/{max_retries}) after {current_delay} seconds...")
                     await asyncio.sleep(current_delay)
+
+                    rate_limit_event.set()
                     current_delay *= backoff  # Exponentially increase delay for the next retry
         return wrapper_retry
     return decorator_retry
@@ -121,17 +126,38 @@ async def response_handler(response):
         else:
             raise Exception("API Error")
 
+async def api_request_handler(session, url, headers = None, json = None):
+    await rate_limit_event.wait()
+
+    default_headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+    if headers:
+        default_headers.update(headers)
+
+    params = {
+        'headers': default_headers
+    }
+
+    if json:
+        params['json'] = json
+
+    response = await session.post(
+        url,
+        **params
+    )
+    await response_handler(response)
+
+    return response
+
 # Function to list files recursively in Dropbox asynchronously
 @retry_with_token_refresh(max_retries=3, delay=2, backoff=2)
 async def fetch_folder_files(session, folder_path):
     try:
         # Making a request to list folder contents
-        response = await session.post(
-            "https://api.dropboxapi.com/2/files/list_folder",
-            headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
+        response = await api_request_handler(
+            session=session,
+            url="https://api.dropboxapi.com/2/files/list_folder",
             json={"path": folder_path, "recursive": True}
         )
-        await response_handler(response)
         return await response.json()
     except Exception as e:
         logging.error(f"Error fetching files from {folder_path}: {str(e)}")
@@ -141,12 +167,11 @@ async def fetch_folder_files(session, folder_path):
 async def fetch_continue_folder_files(session, cursor):
     try:
         # Making a request to continue listing folder contents
-        response = await session.post(
-            "https://api.dropboxapi.com/2/files/list_folder/continue",
-            headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
+        response = await api_request_handler(
+            session=session,
+            url="https://api.dropboxapi.com/2/files/list_folder/continue",
             json={"cursor": cursor}
         )
-        await response_handler(response)
         return await response.json()
     except Exception as e:
         logging.error(f"Error continuing to fetch files: {str(e)}")
@@ -194,13 +219,17 @@ async def download_file(session, dropbox_path, local_path, progress, total_files
     }
 
     try:
-        async with session.post(url, headers=headers) as response:
-            await response_handler(response)
+        response = await api_request_handler(
+            session=session,
+            url=url,
+            headers=headers,
+        )
+        await response_handler(response)
 
-            content = await response.read()
+        content = await response.read()
 
-            async with aiofiles.open(local_path, 'wb') as f:
-                await f.write(content)
+        async with aiofiles.open(local_path, 'wb') as f:
+            await f.write(content)
         logging.info(f"Downloaded {dropbox_path} successfully.")
 
         # Log progress
@@ -218,6 +247,8 @@ async def main():
     os.makedirs(DESTINATION, exist_ok=True)
 
     async with aiohttp.ClientSession() as session:
+        # Allow all requests initially
+        rate_limit_event.set()
         # List all files in the root directory
         logging.info("Starting file listing...")
         files_to_download = await list_files(session)
