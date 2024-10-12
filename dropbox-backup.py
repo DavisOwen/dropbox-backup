@@ -48,15 +48,16 @@ class RateLimitError(Exception):
         super().__init__(message)
 
 class RateLimiter:
-    def __init__(self, max_concurrent_requests: int, delay: int):
+    def __init__(self, max_concurrent_requests: int, delay: float):
         self.semaphore = asyncio.Semaphore(max_concurrent_requests)  # Limit concurrent requests
         self.delay = delay  # Delay between requests
 
-    async def wait(self):
-        async with self.semaphore:  # Acquire a semaphore before making the request
-            await asyncio.sleep(self.delay)  # Delay before proceeding to the request
+    async def request_with_rate_limit(self, request_func, *args, **kwargs):
+        async with self.semaphore:  # Acquire the semaphore
+            await asyncio.sleep(self.delay)  # Delay while holding the semaphore
+            return await request_func(*args, **kwargs)  # Make the request while still holding the semaphore
 
-rate_limiter = RateLimiter(max_concurrent_requests=10, delay=1)
+rate_limiter = RateLimiter(max_concurrent_requests=30, delay=0.5)
 
 def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
     """
@@ -160,18 +161,13 @@ async def api_request_handler(session, url, headers = None, json = None):
     if json:
         params['json'] = json
 
-    await rate_limiter.wait()
-
-    response = await session.post(
-        url,
-        **params
-    )
+    response = await rate_limiter.request_with_rate_limit(session.post, url, **params)
 
     await response_handler(response)
 
     return response
 
-@retry_with_token_refresh(max_retries=3, delay=2, backoff=2)
+@retry_with_token_refresh(max_retries=10, delay=2, backoff=2)
 # Function to list files recursively in Dropbox asynchronously
 async def fetch_folder_files(session, folder_path):
     try:
@@ -186,7 +182,7 @@ async def fetch_folder_files(session, folder_path):
         logging.exception(f"Error fetching files from {folder_path}: {str(e)}")
         raise # Raise exception so the decorator will handle retries
 
-@retry_with_token_refresh(max_retries=3, delay=2, backoff=2)
+@retry_with_token_refresh(max_retries=10, delay=2, backoff=2)
 async def fetch_continue_folder_files(session, cursor):
     try:
         # Making a request to continue listing folder contents
@@ -236,7 +232,7 @@ async def list_and_download_files(session, folder_path="", cursor=None):
         raise
 
 # Function to download a file from Dropbox
-@retry_with_token_refresh(max_retries=3, delay=2, backoff=2)
+@retry_with_token_refresh(max_retries=10, delay=2, backoff=2)
 async def download_file(session, dropbox_path, local_path):
     url = "https://content.dropboxapi.com/2/files/download"
     
@@ -252,10 +248,9 @@ async def download_file(session, dropbox_path, local_path):
             headers=headers,
         )
 
-        content = await response.read()
-
         async with aiofiles.open(local_path, 'wb') as f:
-            await f.write(content)
+            async for chunk in response.content.iter_any():
+                await f.write(chunk)
         logging.debug(f"Downloaded {dropbox_path} successfully.")
     except Exception as e:
         logging.exception(f"Error downloading {dropbox_path}. Error: {str(e)}")
@@ -268,8 +263,15 @@ async def main():
     # Create destination folder if not exists
     os.makedirs(DESTINATION, exist_ok=True)
 
-    timeout = aiohttp.ClientTimeout(total=1000, connect=1000, sock_read=1000, sock_connect=1000)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    timeout = aiohttp.ClientTimeout(
+        # total=None,            # No overall timeout
+        # connect=60,            # Timeout for establishing the connection
+        # sock_read=600,         # Timeout for reading data (increase for large files)
+        # sock_connect=60        # Timeout for TCP connection setup
+    )
+
+    connector = aiohttp.TCPConnector(keepalive_timeout=5)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         # List all files in the root directory
         logging.info("Starting backup...")
 
