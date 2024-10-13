@@ -47,6 +47,9 @@ class RateLimitError(Exception):
         self.retry_after = retry_after
         super().__init__(message)
 
+class UnsupportedFileError(Exception):
+    pass
+
 class RateLimiter:
     def __init__(self, max_concurrent_requests: int, delay: float):
         self.semaphore = asyncio.Semaphore(max_concurrent_requests)  # Limit concurrent requests
@@ -146,6 +149,9 @@ async def response_handler(response):
             response = await response.json()
             retry_after = response.get('error', {}).get('retry_after', None)
             raise RateLimitError("Rate limit exceeded.", retry_after)
+        elif response.status == 409:
+            logging.warning("Unsupported file") 
+            raise UnsupportedFileError("Unsupported file")
         else:
             raise Exception("API Error")
 
@@ -252,6 +258,10 @@ async def download_file(session, dropbox_path, local_path):
             async for chunk in response.content.iter_any():
                 await f.write(chunk)
         logging.debug(f"Downloaded {dropbox_path} successfully.")
+    except UnsupportedFileError as e:
+        # Some files like .paper files just can't be downloaded, we don't care
+        # about skipping these
+        pass
     except Exception as e:
         logging.exception(f"Error downloading {dropbox_path}. Error: {str(e)}")
         raise # Raise exception so the decorator will handle retries
