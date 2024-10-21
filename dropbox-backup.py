@@ -60,7 +60,7 @@ class RateLimiter:
             await asyncio.sleep(self.delay)  # Delay while holding the semaphore
             return await request_func(*args, **kwargs)  # Make the request while still holding the semaphore
 
-rate_limiter = RateLimiter(max_concurrent_requests=30, delay=0.5)
+rate_limiter = RateLimiter(max_concurrent_requests=50, delay=0.1)
 
 def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
     """
@@ -274,10 +274,10 @@ async def main():
     os.makedirs(DESTINATION, exist_ok=True)
 
     timeout = aiohttp.ClientTimeout(
-        # total=None,            # No overall timeout
-        # connect=60,            # Timeout for establishing the connection
-        # sock_read=600,         # Timeout for reading data (increase for large files)
-        # sock_connect=60        # Timeout for TCP connection setup
+        total=10000,
+        connect=10000,
+        sock_read=10000,
+        sock_connect=10000
     )
 
     connector = aiohttp.TCPConnector(keepalive_timeout=5)
