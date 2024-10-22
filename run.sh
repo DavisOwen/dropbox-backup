@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Set variables
+cd "$(dirname "${BASH_SOURCE[0]}")"
 VENV_DIR="./env"      # Path to your virtual environment
 REQUIREMENTS="./requirements.txt"  # Path to requirements.txt
 SCRIPT_NAME="./dropbox-backup.py"
@@ -18,7 +19,7 @@ pip install -r "$REQUIREMENTS"
 
 # Run the Python script
 echo "Running $SCRIPT_NAME..."
-python "$SCRIPT_NAME" &
+python "$SCRIPT_NAME"
 
 # Deactivate the virtual environment
 deactivate
