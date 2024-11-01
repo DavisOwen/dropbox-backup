@@ -1,6 +1,14 @@
 # Dropbox Backup
 
-A simple python script that downloads all your Dropbox files to a directory of your choice. Typically used to backup your files to an external HDD.
+A simple python script that downloads all your Dropbox files to a directory of your choice. Typically used to backup your files to an external HDD. Asyncio used to speed up download times.
+
+## Usage
+
+```bash
+./run.sh
+```
+
+Output can be viewed in the `dropbox_backup.log` file. The runtime for this can be quite long, so it is recommended to run in the background (with `&`), or to automate this via crontab or task scheduler to run in the background intermittently.
 
 ## Credentials
 
@@ -11,6 +19,16 @@ cp .dropbox-backup.env.example .dropbox-backup.env
 Obtain credentials using the instructions in [Obtaining a Dropbox Refresh Token](#obtaining-a-dropbox-refresh-token), and supply them in the corresponding fields in `.dropbox-backup.env`
 
 Destination directory can be specified to choose which directory you want your backup to be stored in.
+
+## Configuration
+
+Since Dropbox API is rate limited, and rate limits are not readily published, we have to enforce rate limits ourselves, otherwise we will be blocked from making further requests. We are using asycio since this is a heavily network and file IO bound script.
+
+The 2 mechanisms we use for RateLimiting are Semaphores and request delays. You can set these in .dropbox-backup.env as `MAX_CONCURRENT_REQUESTS` for the number of semaphores, and `REQUEST_DELAY` for the delay between requests. I found that a value of 50 for semaphores and 0.1 for request delay works well with the script. You will hit rate limits, but not enough to put you in too long of a timeout. These values mean that 50 requests can be ongoing at the same time, and requests will manually wait for 0.1s between network calls.
+
+From experience, with good internet connection, this means the script will take 3hrs for roughly 500GB. Unfortunately, this appears to be as fast as we can expect with this API.
+
+Alternatives include CyberDuck and MountDuck, which you can experiment with to see if you prefer. I enjoy the ease of automation this script provides and the fact that it is free and open source.
 
 ## Usage
 

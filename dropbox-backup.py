@@ -28,6 +28,23 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 logfile = os.path.join(script_dir, 'dropbox-backup.log')
 logging.basicConfig(filename=logfile, level=LOG_LEVEL_DICT.get(LOG_LEVEL, logging.INFO), format='%(asctime)s - %(levelname)s - %(message)s', filemode='w')
 
+def parse_float(value, default=0.0):
+    try:
+        return float(value)
+    except (ValueError, TypeError) as e:
+        logging.error(f"Error parsing float: {e}")
+        return default
+
+def parse_int(value, default=0):
+    try:
+        return int(value)
+    except (ValueError, TypeError) as e:
+        logging.error(f"Error parsing int: {e}")
+        return default
+
+MAX_CONCURRENT_REQUESTS = parse_int(os.getenv("MAX_CONCURRENT_REQUESTS", 50), 50)
+REQUEST_DELAY = parse_float(os.getenv("REQUEST_DELAY", 0.1), 0.1)
+
 # Get Dropbox API credentials from environment variables
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 REFRESH_TOKEN = os.getenv("REFRESH_TOKEN")
@@ -60,7 +77,7 @@ class RateLimiter:
             await asyncio.sleep(self.delay)  # Delay while holding the semaphore
             return await request_func(*args, **kwargs)  # Make the request while still holding the semaphore
 
-rate_limiter = RateLimiter(max_concurrent_requests=50, delay=0.1)
+rate_limiter = RateLimiter(max_concurrent_requests=MAX_CONCURRENT_REQUESTS, delay=REQUEST_DELAY)
 
 def retry_with_token_refresh(max_retries=3, delay=2, backoff=2):
     """
