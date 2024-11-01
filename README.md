@@ -30,14 +30,6 @@ From experience, with good internet connection, this means the script will take 
 
 Alternatives include CyberDuck and MountDuck, which you can experiment with to see if you prefer. I enjoy the ease of automation this script provides and the fact that it is free and open source.
 
-## Usage
-
-```bash
-./run.sh
-```
-
-Output can be viewed in the `dropbox_backup.log` file. The runtime for this can be quite long, so it is recommended to run in the background (with `&`), or to automate this via crontab or task scheduler to run in the background intermittently.
-
 ##  Obtaining a Dropbox Refresh Token
 
 To automate your Dropbox API interactions and avoid manual authentication each time, follow these steps to obtain a refresh token:
